@@ -66,7 +66,6 @@ extern "C" {
 //for printing large ints
 
 using namespace std;
-using namespace crypto;
 
 //Namespace specifically for ring ct code
 namespace rct {

@@ -92,29 +92,35 @@ DISABLE_VS_WARNINGS(4244 4345)
     }
     return first;
   }
-  //-----------------------------------------------------------------
-  void account_base::create_from_keys(const cryptonote::account_public_address& address, const crypto::secret_key& spendkey, const crypto::secret_key& viewkey)
+ //-----------------------------------------------------------------
+  void account_base::create_from_keys(const cryptonote::account_public_address& address, const crypto::secret_key& spendkey, const crypto::secret_key& viewkey, const tm &timestamp)
   {
     m_keys.m_account_address = address;
     m_keys.m_spend_secret_key = spendkey;
     m_keys.m_view_secret_key = viewkey;
 
-    struct tm timestamp;
-    timestamp.tm_year = 2014 - 1900;  // year 2014
-    timestamp.tm_mon = 4 - 1;  // month april
-    timestamp.tm_mday = 15;  // 15th of april
-    timestamp.tm_hour = 0;
-    timestamp.tm_min = 0;
-    timestamp.tm_sec = 0;
-
-    m_creation_timestamp = mktime(&timestamp);
+    struct tm actualtime;
+    if(timestamp.tm_year == 0)
+    {
+      actualtime.tm_year = 2014 - 1900;  // year 2014
+      actualtime.tm_mon = 4 - 1;  // month april
+      actualtime.tm_mday = 15;  // 15th of april
+      actualtime.tm_hour = 0;
+      actualtime.tm_min = 0;
+      actualtime.tm_sec = 0;
+    }
+    else
+    {
+      actualtime = timestamp;
+    }
+    m_creation_timestamp = mktime(&actualtime);
   }
   //-----------------------------------------------------------------
-  void account_base::create_from_viewkey(const cryptonote::account_public_address& address, const crypto::secret_key& viewkey)
+  void account_base::create_from_viewkey(const cryptonote::account_public_address& address, const crypto::secret_key& viewkey, const tm &timestamp)
   {
     crypto::secret_key fake;
     memset(&fake, 0, sizeof(fake));
-    create_from_keys(address, fake, viewkey);
+    create_from_keys(address, fake, viewkey, timestamp);
   }
   //-----------------------------------------------------------------
   const account_keys& account_base::get_keys() const

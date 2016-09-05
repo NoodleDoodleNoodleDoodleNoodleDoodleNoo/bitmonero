@@ -34,6 +34,7 @@
 #include <system_error>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "cryptonote_core/cryptonote_format_utils.h"
 #include "rpc/core_rpc_server_commands_defs.h"

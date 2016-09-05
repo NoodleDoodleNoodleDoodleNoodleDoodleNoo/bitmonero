@@ -130,7 +130,7 @@ extern "C"
 #define t_set(m,n) t_##m##n
 #define t_use(m,n) t_##m##n
 
-#define d_4(t,n,b,e,f,g,h) ALIGN const t n[4][256] = { b(e), b(f), b(g), b(h) }
+#define d_4(t,n,b,e,f,g,h) static ALIGN const t n[4][256] = { b(e), b(f), b(g), b(h) }
 
 #define four_tables(x,tab,vf,rf,c) \
   (tab[0][bval(vf(x,0,c),rf(0,c))] \

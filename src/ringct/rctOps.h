@@ -58,7 +58,6 @@ extern "C" {
 #endif
 
 using namespace std;
-using namespace crypto;
 
 namespace rct {
 

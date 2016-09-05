@@ -62,7 +62,6 @@ extern "C" {
 
 
 using namespace std;
-using namespace crypto;
 
 namespace rct {
 

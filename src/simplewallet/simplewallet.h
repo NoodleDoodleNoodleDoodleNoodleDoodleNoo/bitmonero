@@ -58,7 +58,7 @@ namespace cryptonote
   class simple_wallet : public tools::i_wallet2_callback
   {
   public:
-    static bool get_password(const boost::program_options::variables_map& vm, bool allow_entry, tools::password_container &pwd_container);
+    static bool get_password(const boost::program_options::variables_map& vm, bool allow_entry, tools::password_container &pwd_container, bool is_hw_wallet = false);
     static const char *tr(const char *str) { return i18n_translate(str, "cryptonote::simple_wallet"); }
 
   public:
@@ -153,6 +153,7 @@ namespace cryptonote
     bool try_connect_to_daemon(bool silent = false);
     bool ask_wallet_create_if_needed();
     bool get_address_from_str(const std::string &str, cryptonote::account_public_address &address, bool &has_payment_id, crypto::hash8 &payment_id);
+    bool process_pending_tx(tools::wallet2::pending_tx &ptx);
 
     /*!
      * \brief Prints the seed with a nice message
@@ -265,5 +266,9 @@ namespace cryptonote
     std::atomic<bool> m_auto_refresh_enabled;
     bool m_auto_refresh_refreshing;
     std::atomic<bool> m_in_manual_refresh;
+
+    bool m_hw_wallet;
+    uint32_t m_hw_wallet_index;
+    uint32_t m_hw_wallet_address_version;
   };
 }

@@ -26,9 +26,24 @@
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+if(HW_WALLET_ENABLED)
+    include_directories(../trezor-xmr/shared/keccak)
+    include_directories(../trezor-xmr/client/protobuf-c)
+    include_directories(../trezor-xmr/client/hidapi/hidapi)
+    include_directories(../trezor-xmr/client)
+    include_directories(../trezor-xmr/shared)
+    set(trezor "trezor")
+else()
+    set(trezor "")
+endif()
+
+
+
 set(simplewallet_sources
   simplewallet.cpp
   password_container.cpp)
+
+set_source_files_properties(${simplewallet_sources} PROPERTIES COMPILE_FLAGS "-Wno-unused-value -Wno-format")
 
 set(simplewallet_headers)
 
@@ -51,6 +66,7 @@ target_link_libraries(simplewallet
     common
     mnemonics
     p2p
+    ${trezor}
     ${UNBOUND_LIBRARY}
     ${UPNP_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}

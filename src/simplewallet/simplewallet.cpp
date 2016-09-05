@@ -61,6 +61,10 @@
 #include "ringct/rctSigs.h"
 #include <stdexcept>
 
+#if defined(HW_WALLET_ENABLED)
+#include "trezorwallet.h"
+#endif
+
 #if defined(WIN32)
 #include <crtdbg.h>
 #endif
@@ -130,8 +134,11 @@ namespace
   const command_line::arg_descriptor<bool> arg_trusted_daemon = {"trusted-daemon", sw::tr("Enable commands which rely on a trusted daemon"), false};
   const command_line::arg_descriptor<bool> arg_allow_mismatched_daemon_version = {"allow-mismatched-daemon-version", sw::tr("Allow communicating with a daemon that uses a different RPC version"), false};
   const command_line::arg_descriptor<uint64_t> arg_restore_height = {"restore-height", sw::tr("Restore from specific blockchain height"), 0};
-
   const command_line::arg_descriptor< std::vector<std::string> > arg_command = {"command", ""};
+
+#if defined(HW_WALLET_ENABLED)
+  const command_line::arg_descriptor<std::string> arg_hw_wallet = {"hardware-wallet", sw::tr("Enable trezor <index>:<addr_version>"), "", false};
+#endif
 
   inline std::string interpret_rpc_response(bool ok, const std::string& status)
   {
@@ -641,6 +648,9 @@ simple_wallet::simple_wallet()
   , m_auto_refresh_enabled(false)
   , m_auto_refresh_refreshing(false)
   , m_in_manual_refresh(false)
+  , m_hw_wallet(false)
+  , m_hw_wallet_index(0)
+  , m_hw_wallet_address_version(0)
 {
   m_cmd_binder.set_handler("start_mining", boost::bind(&simple_wallet::start_mining, this, _1), tr("start_mining [<number_of_threads>] - Start mining in daemon"));
   m_cmd_binder.set_handler("stop_mining", boost::bind(&simple_wallet::stop_mining, this, _1), tr("Stop mining in daemon"));
@@ -832,6 +842,9 @@ bool simple_wallet::ask_wallet_create_if_needed()
 {
   std::string wallet_path;
 
+  if(m_hw_wallet)
+	  return true;
+
   bool valid_path = false;
   do {
     wallet_path = command_line::input_line(
@@ -907,7 +920,7 @@ void simple_wallet::print_seed(std::string seed)
 }
 
 //----------------------------------------------------------------------------------------------------
-bool simple_wallet::get_password(const boost::program_options::variables_map& vm, bool allow_entry, tools::password_container &pwd_container)
+bool simple_wallet::get_password(const boost::program_options::variables_map& vm, bool allow_entry, tools::password_container &pwd_container, bool is_hw_wallet)
 {
   // has_arg returns true even when the parameter is not passed ??
   const std::string gfj = command_line::get_arg(vm, arg_generate_from_json);
@@ -948,13 +961,16 @@ bool simple_wallet::get_password(const boost::program_options::variables_map& vm
 
   if (allow_entry)
   {
+  	if(!is_hw_wallet)
+  	{
       //vm is already part of the password container class.  just need to check vm for an already existing wallet
       //here need to pass in variable map.  This will indicate if the wallet already exists to the read password function
-    bool r = pwd_container.read_password();
-    if (!r)
-    {
-      fail_msg_writer() << tr("failed to read wallet password");
-      return false;
+      bool r = pwd_container.read_password();
+      if (!r)
+      {
+        fail_msg_writer() << tr("failed to read wallet password");
+        return false;
+      }
     }
     return true;
   }
@@ -1212,7 +1228,7 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
     if(!ask_wallet_create_if_needed()) return false;
   }
 
-  bool testnet = command_line::get_arg(vm, arg_testnet);
+  bool testnet = command_line::get_arg(vm, arg_testnet) && !m_hw_wallet;
 
   if (m_daemon_host.empty())
     m_daemon_host = "localhost";
@@ -1236,9 +1252,53 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
   }
   catch (const std::exception &e) { }
   tools::password_container pwd_container(m_wallet_file.empty()); //m_wallet_file will be empty at this point for new wallets
-  if (!cryptonote::simple_wallet::get_password(vm, true, pwd_container))
+  if (!cryptonote::simple_wallet::get_password(vm, true, pwd_container, m_hw_wallet))
     return false;
 
+  bool allow_open = true;
+
+#if defined(HW_WALLET_ENABLED)
+  if(m_hw_wallet)
+  {
+	if(!kokko::trezorwallet::get_hw().initialize())
+	{
+	  fail_msg_writer() << tr("failed to initialize hardware wallet");
+	  return false;
+	}
+
+    cryptonote::account_keys account;
+    if(!kokko::trezorwallet::get_hw().get_account(false, account, m_hw_wallet_index, pwd_container.password()))
+    {
+        fail_msg_writer() << tr("failed to retrieve hardware wallet address at index: ") << m_hw_wallet_index;
+        return false;
+    }
+
+    const int len = 20;
+#if 0
+    std::string address = cryptonote::get_account_address_as_str(testnet, account.m_account_address);
+    std::string wallet_path = address.substr(0, len) + address.substr(address.size() - len, address.size());
+#else
+    std::string a = string_tools::pod_to_hex(account.m_account_address.m_spend_public_key);
+    std::string b = string_tools::pod_to_hex(account.m_account_address.m_view_public_key);
+    std::string wallet_path = a.substr(0, len) + b.substr(0, len);
+#endif
+
+    message_writer(epee::log_space::console_color_white, true) << tr("Filename: ") << wallet_path;
+
+    bool keys_file_exists;
+    bool wallet_file_exists;
+    tools::wallet2::wallet_exists(wallet_path, keys_file_exists, wallet_file_exists);
+    m_wallet_file = wallet_path;
+    if(!wallet_file_exists)
+    {
+      bool r = new_wallet(m_wallet_file, pwd_container.password(), account.m_account_address,
+    		  account.m_view_secret_key, false);
+      CHECK_AND_ASSERT_MES(r, false, tr("account creation failed"));
+      allow_open = false;
+    }
+  }
+#endif
+  
   if (!m_generate_new.empty() || m_restoring)
   {
     if (m_wallet_file.empty()) m_wallet_file = m_generate_new;  // alias for simplicity later
@@ -1426,7 +1486,7 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
       CHECK_AND_ASSERT_MES(r, false, tr("account creation failed"));
     }
   }
-  else
+  else if(allow_open)
   {
     bool r = open_wallet(m_wallet_file, pwd_container.password(), testnet);
     CHECK_AND_ASSERT_MES(r, false, tr("failed to open account"));
@@ -1463,6 +1523,39 @@ bool simple_wallet::handle_command_line(const boost::program_options::variables_
                                     !m_generate_from_keys.empty() ||
                                     !m_generate_from_json.empty() ||
                                     m_restore_deterministic_wallet;
+  
+#if defined(HW_WALLET_ENABLED)
+  std::string trezor_options = command_line::get_arg(vm, arg_hw_wallet);
+  if(trezor_options.length() != 0)
+  {
+    std::vector<std::string> options;
+    boost::trim(trezor_options);
+    boost::split(options, trezor_options, boost::is_any_of(" :"));
+    if(options.size() >= 1)
+    {
+      m_hw_wallet_index = static_cast<uint32_t>(atoi(options[0].c_str()));
+      m_hw_wallet = true;
+
+      // disable conflicting options
+      m_wallet_file.clear();
+      m_generate_new.clear();
+      m_generate_from_view_key.clear();
+      m_restore_deterministic_wallet = false;
+      m_non_deterministic = false;
+      m_electrum_seed.clear();
+      m_generate_from_keys.clear();
+      m_restoring = false;	
+
+      if(options.size() >= 2)
+      {
+        uint64_t version = atol(options[1].c_str());
+        if(version > 1)
+        	version = 1;
+        m_hw_wallet_address_version = version;
+      }
+    }
+  }
+#endif
 
   return true;
 }
@@ -1555,8 +1648,7 @@ bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string
       return false;
   }
 
-
-  m_wallet_file=wallet_file;
+  m_wallet_file = wallet_file;
 
   m_wallet.reset(new tools::wallet2(testnet));
   m_wallet->callback(this);
@@ -1615,19 +1707,36 @@ bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string
 bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string& password, const cryptonote::account_public_address& address,
   const crypto::secret_key& viewkey, bool testnet)
 {
-  m_wallet_file=wallet_file;
+  m_wallet_file = wallet_file;
 
-  m_wallet.reset(new tools::wallet2(testnet));
+#if defined(HW_WALLET_ENABLED)
+  if(m_hw_wallet)
+    m_wallet.reset(new kokko::trezorwallet(testnet));
+  else
+#endif
+    m_wallet.reset(new tools::wallet2(testnet));
+
   m_wallet->callback(this);
   if (m_restore_height)
     m_wallet->set_refresh_from_block_height(m_restore_height);
 
   try
   {
-    m_wallet->generate(wallet_file, password, address, viewkey);
-    message_writer(epee::log_space::console_color_white, true) << tr("Generated new watch-only wallet: ")
-      << m_wallet->get_account().get_public_address_str(m_wallet->testnet());
-    std::cout << tr("View key: ") << string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_view_secret_key) << ENDL;
+#if defined(HW_WALLET_ENABLED)
+    if(m_hw_wallet)
+    {
+      m_wallet->generate(wallet_file, password, address, viewkey, true, kokko::trezorwallet::get_hw().get_timestamp());
+      message_writer(epee::log_space::console_color_white, true) << tr("Generated new hardware wallet: ")
+        << m_wallet->get_account().get_public_address_str(m_wallet->testnet());
+    }
+    else
+#endif
+    {
+      m_wallet->generate(wallet_file, password, address, viewkey);
+      message_writer(epee::log_space::console_color_white, true) << tr("Generated new watch-only wallet: ")
+        << m_wallet->get_account().get_public_address_str(m_wallet->testnet());
+      std::cout << tr("View key: ") << string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_view_secret_key) << ENDL;
+    }
   }
   catch (const std::exception& e)
   {
@@ -1643,7 +1752,7 @@ bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string
 bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string& password, const cryptonote::account_public_address& address,
   const crypto::secret_key& spendkey, const crypto::secret_key& viewkey, bool testnet)
 {
-  m_wallet_file=wallet_file;
+  m_wallet_file = wallet_file;
 
   m_wallet.reset(new tools::wallet2(testnet));
   m_wallet->callback(this);
@@ -1675,8 +1784,15 @@ bool simple_wallet::open_wallet(const string &wallet_file, const std::string& pa
     return false;
   }
 
-  m_wallet_file=wallet_file;
-  m_wallet.reset(new tools::wallet2(testnet));
+  m_wallet_file = wallet_file;
+
+#if defined(HW_WALLET_ENABLED)
+  if(m_hw_wallet)
+    m_wallet.reset(new kokko::trezorwallet(testnet));
+  else
+#endif
+    m_wallet.reset(new tools::wallet2(testnet));
+
   m_wallet->callback(this);
 
   try
@@ -1760,6 +1876,11 @@ bool simple_wallet::close_wallet()
     fail_msg_writer() << e.what();
     return false;
   }
+
+#if defined(HW_WALLET_ENABLED)
+  if(m_hw_wallet)
+	  kokko::trezorwallet::get_hw().shutdown();
+#endif
 
   return true;
 }
@@ -2213,6 +2334,78 @@ bool simple_wallet::rescan_spent(const std::vector<std::string> &args)
 
   return true;
 }
+
+//----------------------------------------------------------------------------------------------------
+bool simple_wallet::process_pending_tx(tools::wallet2::pending_tx &ptx)
+{
+#if defined(HW_WALLET_ENABLED)
+	message_writer(epee::log_space::console_color_cyan, true) << ">> Raw transaction data <<" << std::endl;
+	int i = 0;
+	uint64_t total_inputs = 0;
+	for(const auto &s : ptx.sources)
+	{
+		printf("%02d: %llu %zu %zu [%s]\n", i, s.amount, s.real_output, s.real_output_in_tx_index,
+				epee::string_tools::pod_to_hex(s.real_out_tx_key).c_str());
+		total_inputs += s.amount;
+		int j = 0;
+		for(const auto &o : s.outputs)
+		{
+			printf("\t%02d: %llu\t%s\n", j, o.first, epee::string_tools::pod_to_hex(o.second).c_str());
+			++j;
+		}
+		++i;
+	}
+	printf(">> Inputs:\t%.8lf xmr\n", total_inputs / 1.0e12);
+	i = 0;
+	uint64_t total_outputs = 0;
+	uint64_t change = 0;
+	uint64_t sent = 0;
+	std::string wallet_address = m_wallet->get_account().get_public_address_str(false);
+	for(const auto &o : ptx.shuffled_dests)
+	{
+		std::string dest_address = cryptonote::get_account_address_as_str(false, o.addr);
+		printf("%02d: %-20llu%s\n", i, o.amount, dest_address.c_str());
+		total_outputs += o.amount;
+		if(dest_address == wallet_address)
+			change += o.amount;
+		else
+			sent += o.amount;
+
+		++i;
+	}
+	printf(">> Outputs:\t%.8lf xmr\n", total_outputs / 1.0e12);
+	printf(">> Sent:\t%.8lf xmr\n", sent / 1.0e12);
+	printf(">> Change:\t%.8lf xmr\n", change / 1.0e12);
+
+	if(m_hw_wallet)
+	{
+		cryptonote::transaction tx;
+		kokko::trezor::payment_id_type payment_id_type = kokko::trezor::payment_id_type::none;
+		if(ptx.has_payment_id)
+		{
+			payment_id_type = ptx.has_encrypted_payment_id ? kokko::trezor::payment_id_type::encrypted : kokko::trezor::payment_id_type::normal;
+		}
+
+		TIME_MEASURE_START(time_generate);
+		if(!kokko::trezorwallet::get_hw().generate_tx(tx, ptx.sources, ptx.shuffled_dests, ptx.tx.unlock_time, ptx.tx.version, payment_id_type, ptx.payment_id))
+		{
+			THROW_WALLET_EXCEPTION_IF(true, tools::error::wallet_internal_error, "cancelled tx construction or hw disconnected.");
+			return false;
+		}
+		TIME_MEASURE_FINISH(time_generate);
+		message_writer(epee::log_space::console_color_cyan, true) << ">> Generated tx data <<" << std::endl;
+		message_writer(epee::log_space::console_color_white, true) << cryptonote::obj_to_json_str(tx) << std::endl;
+		ptx.tx = tx;
+	}
+#endif
+
+	m_wallet->commit_tx(ptx);
+    success_msg_writer(true) << tr("Money successfully sent, transaction ") << get_transaction_hash(ptx.tx);
+
+	return true;
+}
+
+
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::get_address_from_str(const std::string &str, cryptonote::account_public_address &address, bool &has_payment_id, crypto::hash8 &payment_id)
 {
@@ -2319,6 +2512,10 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
      return true;
   }
 
+  bool is_using_payment_id = false;
+  bool is_encrypted_payment_id = false;
+  crypto::hash raw_payment_id  = null_hash;
+
   std::vector<uint8_t> extra;
   bool payment_id_seen = false;
   if (1 == local_args.size() % 2)
@@ -2333,6 +2530,8 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
       std::string extra_nonce;
       set_payment_id_to_tx_extra_nonce(extra_nonce, payment_id);
       r = add_extra_nonce_to_tx_extra(extra, extra_nonce);
+      is_encrypted_payment_id = false;
+      raw_payment_id = payment_id;
     }
     else
     {
@@ -2343,6 +2542,8 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
         std::string extra_nonce;
         set_encrypted_payment_id_to_tx_extra_nonce(extra_nonce, payment_id8);
         r = add_extra_nonce_to_tx_extra(extra, extra_nonce);
+        is_encrypted_payment_id = true;
+        memcpy(raw_payment_id.data, payment_id8.data, sizeof(payment_id8.data));
       }
     }
 
@@ -2352,6 +2553,7 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
       return true;
     }
     payment_id_seen = true;
+    is_using_payment_id = true;
   }
 
   vector<cryptonote::tx_destination_entry> dsts;
@@ -2379,6 +2581,10 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
         fail_msg_writer() << tr("failed to set up payment id, though it was decoded correctly");
         return true;
       }
+
+      is_encrypted_payment_id = true;
+      is_using_payment_id = true;
+      memcpy(raw_payment_id.data, new_payment_id.data, sizeof(new_payment_id.data));
     }
 
     bool ok = cryptonote::parse_amount(de.amount, local_args[i + 1]);
@@ -2458,9 +2664,13 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
     while (!ptx_vector.empty())
     {
       auto & ptx = ptx_vector.back();
-      m_wallet->commit_tx(ptx);
-      success_msg_writer(true) << tr("Money successfully sent, transaction ") << get_transaction_hash(ptx.tx);
-
+      ptx.has_payment_id = is_using_payment_id;
+      ptx.has_encrypted_payment_id = is_encrypted_payment_id;
+      ptx.payment_id = raw_payment_id;
+      if(!process_pending_tx(ptx))
+      {
+        return false;
+      }
       // if no exception, remove element from vector
       ptx_vector.pop_back();
     }
@@ -2619,8 +2829,13 @@ bool simple_wallet::sweep_unmixable(const std::vector<std::string> &args_)
     while (!ptx_vector.empty())
     {
       auto & ptx = ptx_vector.back();
-      m_wallet->commit_tx(ptx);
-      success_msg_writer(true) << tr("Money successfully sent, transaction: ") << get_transaction_hash(ptx.tx);
+      ptx.has_payment_id = false;
+      ptx.has_encrypted_payment_id = false;
+      ptx.payment_id = null_hash;
+      if(!process_pending_tx(ptx))
+      {
+    	  return false;
+      }
 
       // if no exception, remove element from vector
       ptx_vector.pop_back();
@@ -3381,7 +3596,26 @@ void simple_wallet::stop()
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::print_address(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
 {
-  success_msg_writer() << m_wallet->get_account().get_public_address_str(m_wallet->testnet());
+  std::string address = m_wallet->get_account().get_public_address_str(m_wallet->testnet());
+#if defined(HW_WALLET_ENABLED)
+  if(m_hw_wallet)
+  {
+	const int len = 10;
+	epee::log_space::set_console_color(epee::log_space::console_color_green, true);
+	std::cout << address.substr(0, len);
+	epee::log_space::set_console_color(epee::log_space::console_color_default, false);
+	std::cout << address.substr(len, address.size()) << std::endl;
+	if(!kokko::trezorwallet::get_hw().display_address())
+	{
+	  fail_msg_writer() << tr("hw wallet not connected.");
+	}
+  }
+  else
+#endif
+  {
+	success_msg_writer() << address;
+  }
+
   return true;
 }
 //----------------------------------------------------------------------------------------------------
@@ -3732,6 +3966,10 @@ int main(int argc, char* argv[])
   command_line::add_arg(desc_params, arg_command);
   command_line::add_arg(desc_params, arg_log_level);
   command_line::add_arg(desc_params, arg_max_concurrency);
+
+#if defined(HW_WALLET_ENABLED)
+  command_line::add_arg(desc_params, arg_hw_wallet);
+#endif
 
   bf::path default_log {log_space::log_singletone::get_default_log_folder()};
   std::string log_file_name = log_space::log_singletone::get_default_log_file();

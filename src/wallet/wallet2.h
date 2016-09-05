@@ -81,6 +81,8 @@ namespace tools
     }
   };
 
+  bool verify_keys(const crypto::secret_key& sec, const crypto::public_key& expected_pub);
+
   class wallet2
   {
   public:
@@ -164,6 +166,18 @@ namespace tools
       std::string key_images;
       crypto::secret_key tx_key;
       std::vector<cryptonote::tx_destination_entry> dests;
+
+      // store extra info for external tx generation.
+      // inputs
+      std::vector<cryptonote::tx_source_entry> sources;
+      // pre-shuffled destinations
+      std::vector<cryptonote::tx_destination_entry> shuffled_dests;
+      // payment id is used
+      bool has_payment_id;
+      // payment id type
+      bool has_encrypted_payment_id;
+      // payment id data, 8/32 bytes
+      crypto::hash payment_id;
     };
 
     struct keys_file_data
@@ -218,7 +232,7 @@ namespace tools
      */
     void generate(const std::string& wallet, const std::string& password,
       const cryptonote::account_public_address &account_public_address,
-      const crypto::secret_key& viewkey = crypto::secret_key());
+      const crypto::secret_key& viewkey = crypto::secret_key(), bool watch_only = true, const tm &timestamp = tm());
     /*!
      * \brief Rewrites to the wallet file for wallet upgrade (doesn't generate key, assumes it's already there)
      * \param wallet_name Name of wallet file (should exist)
@@ -419,7 +433,13 @@ namespace tools
     uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, uint64_t &spent, uint64_t &unspent);
 
     void update_pool_state();
-  private:
+  protected:
+    transfer_container m_transfers;
+    i_wallet2_callback* m_callback;
+    cryptonote::account_base m_account;
+    std::unordered_map<crypto::key_image, size_t> m_key_images;
+    virtual void get_key_images(const std::vector<size_t> &outs, const crypto::public_key &tx_pub_key,
+    		std::vector<cryptonote::keypair> &ephemerals, std::vector<crypto::key_image> &key_images);
     /*!
      * \brief  Stores wallet information to wallet file.
      * \param  keys_file_name Name of wallet file
@@ -427,26 +447,31 @@ namespace tools
      * \param  watch_only     true to save only view key, false to save both spend and view keys
      * \return                Whether it was successful.
      */
-    bool store_keys(const std::string& keys_file_name, const std::string& password, bool watch_only = false);
+    virtual bool store_keys(const std::string& keys_file_name, const std::string& password, bool watch_only = false);
     /*!
      * \brief Load wallet information from wallet file.
      * \param keys_file_name Name of wallet file
      * \param password       Password of wallet file
      */
-    bool load_keys(const std::string& keys_file_name, const std::string& password);
+    virtual bool load_keys(const std::string& keys_file_name, const std::string& password);
+    bool clear();
+    bool prepare_file_names(const std::string& file_path);
+    cryptonote::account_public_address m_account_public_address;
+    bool m_watch_only; /*!< no spend key */
+
+  private:
+
     void process_new_transaction(const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint64_t ts, bool miner_tx, bool pool);
     void process_new_blockchain_entry(const cryptonote::block& b, const cryptonote::block_complete_entry& bche, const crypto::hash& bl_id, uint64_t height, const cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices &o_indices);
     void detach_blockchain(uint64_t height);
     void get_short_chain_history(std::list<crypto::hash>& ids) const;
     bool is_tx_spendtime_unlocked(uint64_t unlock_time, uint64_t block_height) const;
-    bool clear();
     void pull_blocks(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::list<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices);
     void pull_hashes(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::list<crypto::hash> &hashes);
     void fast_refresh(uint64_t stop_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history);
     void pull_next_blocks(uint64_t start_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::list<cryptonote::block_complete_entry> &prev_blocks, std::list<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, bool &error);
     void process_blocks(uint64_t start_height, const std::list<cryptonote::block_complete_entry> &blocks, const std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t& blocks_added);
     uint64_t select_transfers(uint64_t needed_money, std::vector<size_t> unused_transfers_indices, std::list<transfer_container::iterator>& selected_transfers, bool trusted_daemon);
-    bool prepare_file_names(const std::string& file_path);
     void process_unconfirmed(const cryptonote::transaction& tx, uint64_t height);
     void process_outgoing(const cryptonote::transaction& tx, uint64_t height, uint64_t ts, uint64_t spent, uint64_t received);
     void add_unconfirmed_tx(const cryptonote::transaction& tx, uint64_t amount_in, const std::vector<cryptonote::tx_destination_entry> &dests, const crypto::hash &payment_id, uint64_t change_amount);
@@ -466,7 +491,6 @@ namespace tools
     template<typename entry>
     void get_outs(std::vector<std::vector<entry>> &outs, const std::list<transfer_container::iterator> &selected_transfers, size_t fake_outputs_count);
 
-    cryptonote::account_base m_account;
     std::string m_daemon_address;
     std::string m_wallet_file;
     std::string m_keys_file;
@@ -478,10 +502,7 @@ namespace tools
     std::unordered_map<crypto::hash, payment_details> m_unconfirmed_payments;
     std::unordered_map<crypto::hash, crypto::secret_key> m_tx_keys;
 
-    transfer_container m_transfers;
     payment_container m_payments;
-    std::unordered_map<crypto::key_image, size_t> m_key_images;
-    cryptonote::account_public_address m_account_public_address;
     std::unordered_map<crypto::hash, std::string> m_tx_notes;
     uint64_t m_upper_transaction_size_limit; //TODO: auto-calc this value or request from daemon, now use some fixed value
 
@@ -489,12 +510,10 @@ namespace tools
 
     boost::mutex m_daemon_rpc_mutex;
 
-    i_wallet2_callback* m_callback;
     bool m_testnet;
     bool m_restricted;
     std::string seed_language; /*!< Language of the mnemonics (seed). */
     bool is_old_file_format; /*!< Whether the wallet file is of an old file format */
-    bool m_watch_only; /*!< no spend key */
     bool m_always_confirm_transfers;
     bool m_store_tx_info; /*!< request txkey to be returned in RPC, and store in the wallet cache file */
     uint32_t m_default_mixin;
@@ -871,6 +890,9 @@ namespace tools
     ptx.selected_transfers = selected_transfers;
     ptx.tx_key = tx_key;
     ptx.dests = dsts;
+
+    ptx.shuffled_dests = splitted_dsts;
+    ptx.sources = sources;
   }
 
 
