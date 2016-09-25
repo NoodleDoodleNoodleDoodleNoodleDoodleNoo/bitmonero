@@ -74,3 +74,18 @@ bitmonero_add_library(crypto
   ${crypto_sources}
   ${crypto_headers}
   ${crypto_private_headers})
+target_link_libraries(crypto
+  PUBLIC
+    ${Boost_SYSTEM_LIBRARY}
+  PRIVATE
+    ${EXTRA_LIBRARIES})
+
+if (ARM)
+  option(NO_OPTIMIZED_MULTIPLY_ON_ARM
+	   "Compute multiply using generic C implementation instead of ARM ASM" OFF)
+  if(NO_OPTIMIZED_MULTIPLY_ON_ARM)
+    message(STATUS "Using generic C implementation for multiply")
+    set_property(SOURCE slow-hash.c
+      PROPERTY COMPILE_DEFINITIONS "NO_OPTIMIZED_MULTIPLY_ON_ARM")
+  endif()
+endif()

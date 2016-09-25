@@ -58,7 +58,7 @@ bitmonero_add_executable(simplewallet
   ${simplewallet_headers}
   ${simplewallet_private_headers})
 target_link_libraries(simplewallet
-  LINK_PRIVATE
+  PRIVATE
     wallet
     rpc
     cryptonote_core
@@ -69,6 +69,10 @@ target_link_libraries(simplewallet
     ${trezor}
     ${UNBOUND_LIBRARY}
     ${UPNP_LIBRARIES}
+    ${Boost_CHRONO_LIBRARY}
+    ${Boost_PROGRAM_OPTIONS_LIBRARY}
+    ${Boost_FILESYSTEM_LIBRARY}
+    ${Boost_THREAD_LIBRARY}
     ${CMAKE_THREAD_LIBS_INIT}
     ${EXTRA_LIBRARIES})
 add_dependencies(simplewallet
@@ -76,3 +80,4 @@ add_dependencies(simplewallet
 set_property(TARGET simplewallet
   PROPERTY
     OUTPUT_NAME "monero-wallet-cli")
+install(TARGETS simplewallet DESTINATION bin)

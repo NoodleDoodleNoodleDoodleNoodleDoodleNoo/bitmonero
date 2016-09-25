@@ -202,13 +202,13 @@ add_library(unbound
   ${compat_src}
   ${libunbound_src})
 target_link_libraries(unbound
-  LINK_PRIVATE
+  PRIVATE
     ${OPENSSL_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT})
 
 if (WIN32)
   target_link_libraries(unbound
-    LINK_PRIVATE
+    PRIVATE
       iphlpapi
       ws2_32)
 endif ()
@@ -230,7 +230,7 @@ if (MINGW)
 endif ()
 
 
-if (BUILD_GUI_DEPS)
+if (INSTALL_VENDORED_LIBUNBOUND)
     install(TARGETS unbound
         ARCHIVE DESTINATION lib)
 endif()    
