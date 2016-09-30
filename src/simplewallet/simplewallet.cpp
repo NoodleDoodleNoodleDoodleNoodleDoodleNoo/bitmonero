@@ -2615,7 +2615,8 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
     }
 
     // if more than one tx necessary, prompt user to confirm
-    if (m_wallet->always_confirm_transfers() || ptx_vector.size() > 1)
+    // Note: ignore confirmation on hardware-wallet single tx, prompt otherwise
+    if ((m_wallet->always_confirm_transfers() && !m_hw_wallet) || ptx_vector.size() > 1)
     {
         uint64_t total_fee = 0;
         uint64_t dust_not_in_fee = 0;
@@ -2936,6 +2937,9 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
   }
 
   std::vector<std::string> local_args = args_;
+  bool is_using_payment_id = false;
+  bool is_encrypted_payment_id = false;
+  crypto::hash raw_payment_id  = null_hash;
 
   size_t fake_outs_count;
   if(local_args.size() > 0) {
@@ -2965,6 +2969,8 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
       std::string extra_nonce;
       set_payment_id_to_tx_extra_nonce(extra_nonce, payment_id);
       r = add_extra_nonce_to_tx_extra(extra, extra_nonce);
+      is_encrypted_payment_id = false;
+      raw_payment_id = payment_id;
     }
     else
     {
@@ -2975,6 +2981,8 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
         std::string extra_nonce;
         set_encrypted_payment_id_to_tx_extra_nonce(extra_nonce, payment_id8);
         r = add_extra_nonce_to_tx_extra(extra, extra_nonce);
+        is_encrypted_payment_id = true;
+        memcpy(raw_payment_id.data, payment_id8.data, sizeof(payment_id8.data));
       }
     }
 
@@ -2984,6 +2992,7 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
       return true;
     }
     payment_id_seen = true;
+    is_using_payment_id = true;
   }
 
   if (local_args.size() == 0)
@@ -3014,6 +3023,9 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
       fail_msg_writer() << tr("failed to set up payment id, though it was decoded correctly");
       return true;
     }
+    is_encrypted_payment_id = true;
+    is_using_payment_id = true;
+    memcpy(raw_payment_id.data, new_payment_id.data, sizeof(new_payment_id.data));
   }
 
   try
@@ -3063,13 +3075,16 @@ bool simple_wallet::sweep_all(const std::vector<std::string> &args_)
       return true;
     }
 
-    // actually commit the transactions
     while (!ptx_vector.empty())
     {
       auto & ptx = ptx_vector.back();
-      m_wallet->commit_tx(ptx);
-      success_msg_writer(true) << tr("Money successfully sent, transaction: ") << get_transaction_hash(ptx.tx);
-
+      ptx.has_payment_id = is_using_payment_id;
+      ptx.has_encrypted_payment_id = is_encrypted_payment_id;
+      ptx.payment_id = raw_payment_id;
+      if(!process_pending_tx(ptx))
+      {
+        return false;
+      }
       // if no exception, remove element from vector
       ptx_vector.pop_back();
     }
